@@ -76,15 +76,14 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          # Pre-release, deliberately: this build has never run against a live Docker daemon or the
-          # host's UI. Everything below the transport is covered by tests; the first contact with a
-          # real daemon is still ahead.
+          # Still a pre-release: it now runs against a real daemon, but the host half it needs has
+          # not shipped in any xQuakShell release.
           prerelease: true
           generate_release_notes: true
           files: |
             dist/release/*
           body: |
-            **Pre-release.** Not yet verified against a live Docker daemon or the host UI.
+            **Pre-release.** Runs against a live Docker daemon; the host it needs is unreleased.
 
             ### Requires an unreleased host
             This plugin uses the `ui` capability (ADR-015): plugin-owned tabs, dialogs and the node
@@ -93,14 +92,18 @@ jobs:
             capability negotiation at load with `-32009`, which is the host correctly refusing a
             plugin it cannot serve.
 
+            The Delete key over a selection needs a host that understands an action's `delete` flag.
+            On an older one the flag is ignored and the key does nothing; the Remove… menu entry
+            works either way.
+
             ### What is covered by tests
             Frame codec, JSON-RPC client, channel flow control, the Engine API client and its stream
-            demultiplexer, status-tone mapping and node-id validation — all under `-race`. The
-            manifest is validated against the host's own validator.
+            demultiplexer, status-tone mapping, usage derivation for images, volumes and networks,
+            node-id validation, and that one selection asks exactly one question — all under
+            `-race`. The manifest is validated against the host's own validator.
 
             ### What is not
-            The response of a real `docker system dial-stdio`, a live `/events` stream, a hijacked
-            `exec`, and how any of the panels look.
+            A live `/events` stream and how the panels look under every theme.
 
             ### Install
             Two routes, and they differ in what arrives:
