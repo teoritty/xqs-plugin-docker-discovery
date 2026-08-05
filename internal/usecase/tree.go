@@ -35,6 +35,9 @@ type Action struct {
 	Danger  bool   `json:"danger,omitempty"`
 	Confirm string `json:"confirm,omitempty"`
 	Multi   bool   `json:"multi,omitempty"`
+	// Delete tells the host which action its Delete key means. The host still knows nothing about
+	// what the action does — it relays the same id the menu would have (ADR-014 "Actions").
+	Delete bool `json:"delete,omitempty"`
 }
 
 // buildRoot returns the four groups under the Docker node.

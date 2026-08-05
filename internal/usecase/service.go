@@ -104,7 +104,27 @@ func (s *Service) InvokeAction(sessionID string, nodeIDs []string, actionID stri
 	}()
 }
 
-// runAction dispatches one action over its target nodes.
+// target is one resolved node an action is aimed at.
+type target struct {
+	kind     domain.Kind
+	dockerID string
+}
+
+// failure is one target the daemon refused, and which one it was.
+type failure struct {
+	label string
+	err   error
+}
+
+// runAction runs one action over a whole selection.
+//
+// The selection is ONE operation, not a loop of them. The host allows a plugin one open dialog at a
+// time (a second modal would stack over the first and be answered blind), so a per-node loop that
+// opens a dialog each time gets exactly one through and is refused for every node after it — with
+// nothing on screen to say so. That is what made removing five images remove one.
+//
+// So everything that needs an answer asks once for the whole set, and everything that fails reports
+// once for the whole set.
 func (s *Service) runAction(ctx context.Context, conn *Connection, nodeIDs []string, actionID string) {
 	switch actionID {
 	case ActionVolumeCreate:
@@ -115,6 +135,7 @@ func (s *Service) runAction(ctx context.Context, conn *Connection, nodeIDs []str
 		return
 	}
 
+	targets := make([]target, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		kind, dockerID, err := conn.Resolve(nodeID)
 		if err != nil {
@@ -123,56 +144,121 @@ func (s *Service) runAction(ctx context.Context, conn *Connection, nodeIDs []str
 			slog.Warn("action refused for an unresolvable node", "action", actionID)
 			continue
 		}
-		s.runOne(ctx, conn, kind, dockerID, nodeID, actionID)
+		targets = append(targets, target{kind: kind, dockerID: dockerID})
 	}
+	if len(targets) == 0 {
+		return
+	}
+
+	// The dialog paths return here: the work happens when the dialog is answered, and so does the
+	// refresh. Refreshing now would only redraw the tree the user is still looking at.
+	switch actionID {
+	case ActionContainerRemove:
+		s.openRemoveContainerDialog(ctx, conn, targets)
+		return
+	case ActionImageRemove:
+		s.openRemoveImageDialog(ctx, conn, targets)
+		return
+	case ActionVolumeRemove:
+		s.openRemoveVolumeDialog(ctx, conn, targets)
+		return
+	}
+
+	// Single-node actions. They are published without Multi, so the host never sends more than one
+	// node for them; the first target is the selection.
+	switch actionID {
+	case ActionContainerLogs:
+		s.openLogSurface(ctx, conn, targets[0].dockerID)
+		return
+	case ActionContainerConsole:
+		s.openConsoleSurface(ctx, conn, targets[0].dockerID)
+		return
+	case ActionContainerInspect, ActionImageInspect, ActionVolumeInspect, ActionNetworkInspect:
+		s.openInspectDialog(ctx, conn, string(targets[0].kind), targets[0].dockerID)
+		return
+	}
+
+	s.reportBatch(ctx, conn, s.runOverTargets(ctx, conn, targets, actionID))
 	s.refreshAll(ctx, conn)
 }
 
-func (s *Service) runOne(ctx context.Context, conn *Connection, kind domain.Kind, dockerID, nodeID, actionID string) {
+// runOverTargets applies an immediate action to every target and returns what was refused.
+//
+// It collects rather than reports, so the caller can say everything that went wrong in one place —
+// see reportBatch.
+func (s *Service) runOverTargets(ctx context.Context, conn *Connection, targets []target, actionID string) []failure {
 	client, err := conn.Control(ctx)
 	if err != nil {
-		return
+		// One failure for the whole batch: the daemon is unreachable, so naming each target would
+		// repeat the same sentence once per selected node.
+		return []failure{{err: err}}
 	}
-	switch actionID {
-	case ActionContainerStart:
-		s.report(ctx, conn, client.StartContainer(ctx, dockerID))
-	case ActionContainerStop:
-		s.report(ctx, conn, client.StopContainer(ctx, dockerID))
-	case ActionContainerRestart:
-		s.report(ctx, conn, client.RestartContainer(ctx, dockerID))
-	case ActionContainerKill:
-		s.report(ctx, conn, client.KillContainer(ctx, dockerID))
-	case ActionContainerPause:
-		s.report(ctx, conn, client.PauseContainer(ctx, dockerID))
-	case ActionContainerResume:
-		s.report(ctx, conn, client.UnpauseContainer(ctx, dockerID))
-	case ActionContainerRemove:
-		s.openRemoveContainerDialog(ctx, conn, dockerID)
-	case ActionImageRemove:
-		s.openRemoveImageDialog(ctx, conn, dockerID)
-	case ActionVolumeRemove:
-		s.openRemoveVolumeDialog(ctx, conn, dockerID)
-	case ActionNetworkRemove:
-		s.report(ctx, conn, client.RemoveNetwork(ctx, dockerID))
-	case ActionContainerLogs:
-		s.openLogSurface(ctx, conn, dockerID)
-	case ActionContainerConsole:
-		s.openConsoleSurface(ctx, conn, dockerID)
-	case ActionContainerInspect, ActionImageInspect, ActionVolumeInspect, ActionNetworkInspect:
-		s.openInspectDialog(ctx, conn, string(kind), dockerID)
+	var failures []failure
+	for _, t := range targets {
+		var actErr error
+		switch actionID {
+		case ActionContainerStart:
+			actErr = client.StartContainer(ctx, t.dockerID)
+		case ActionContainerStop:
+			actErr = client.StopContainer(ctx, t.dockerID)
+		case ActionContainerRestart:
+			actErr = client.RestartContainer(ctx, t.dockerID)
+		case ActionContainerKill:
+			actErr = client.KillContainer(ctx, t.dockerID)
+		case ActionContainerPause:
+			actErr = client.PauseContainer(ctx, t.dockerID)
+		case ActionContainerResume:
+			actErr = client.UnpauseContainer(ctx, t.dockerID)
+		case ActionNetworkRemove:
+			actErr = client.RemoveNetwork(ctx, t.dockerID)
+		default:
+			// An action id this build does not know. Nothing to do and nothing to report — the menu
+			// it came from was drawn by a version of this plugin, so this is a bug, not a refusal.
+			return nil
+		}
+		if actErr != nil {
+			failures = append(failures, failure{label: s.targetLabel(ctx, conn, t), err: actErr})
+		}
 	}
+	return failures
 }
 
-// report surfaces a failed action to the user.
+// reportBatch surfaces everything one operation refused, in one dialog.
 //
 // A 404 is swallowed: the object was already gone, which is what the user asked for when they
 // removed it and is an ordinary race when the tree is a moment behind. Anything else is shown,
 // because an action that silently did nothing is worse than one that says why.
-func (s *Service) report(ctx context.Context, conn *Connection, err error) {
-	if err == nil || dockerapi.IsNotFound(err) {
+//
+// One dialog for the batch is not only tidier — it is the only shape that works. Nine failures out
+// of ten selected containers would otherwise be nine dialog.open calls, of which the host accepts
+// the first and refuses the rest, and the user would be told about one failure and left to guess at
+// the other eight.
+func (s *Service) reportBatch(ctx context.Context, conn *Connection, failures []failure) {
+	lines := make([]string, 0, len(failures))
+	for _, f := range failures {
+		if f.err == nil || dockerapi.IsNotFound(f.err) {
+			continue
+		}
+		if f.label == "" {
+			lines = append(lines, userMessage(f.err))
+			continue
+		}
+		lines = append(lines, f.label+" — "+userMessage(f.err))
+	}
+	if len(lines) == 0 {
 		return
 	}
-	s.openMessageDialog(ctx, conn, "Docker refused this", userMessage(err))
+	s.openMessageDialog(ctx, conn, "Docker refused this", strings.Join(lines, "\n"))
+}
+
+// targetLabel names a target in a failure list. A container gets its name — the id it was addressed
+// by is not what the user selected — and everything else gets the id it is known by, which for a
+// volume IS its name.
+func (s *Service) targetLabel(ctx context.Context, conn *Connection, t target) string {
+	if t.kind == domain.KindContainer {
+		return s.containerName(ctx, conn, t.dockerID)
+	}
+	return shortID(strings.TrimPrefix(t.dockerID, "sha256:"))
 }
 
 // forget drops everything belonging to a session the host no longer holds: its state, its event

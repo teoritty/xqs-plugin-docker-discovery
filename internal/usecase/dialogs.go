@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -50,6 +52,10 @@ func (s *Service) openDialog(ctx context.Context, kind, title, submitLabel strin
 	}
 	raw, err := s.host.Call(ctx, "dialog.open", payload)
 	if err != nil {
+		// Logged, never swallowed. A refused dialog has no other symptom whatsoever: the user clicks
+		// and nothing happens, and there is nothing anywhere saying why. That silence is what hid the
+		// one-dialog-per-plugin limit for as long as it did.
+		slog.Warn("dialog refused", "component", "docker", "title", title, "err", err)
 		return
 	}
 	var res struct {
@@ -283,64 +289,87 @@ func (s *Service) openCreateNetworkDialog(ctx context.Context, conn *Connection)
 
 // --- remove -----------------------------------------------------------------
 
-func (s *Service) openRemoveContainerDialog(ctx context.Context, conn *Connection, containerID string) {
-	name := s.containerName(ctx, conn, containerID)
-	s.openDialog(ctx, "form", "Remove "+name, "Remove", []section{
+// The three remove dialogs ask ONCE for the whole selection.
+//
+// Not a style choice: the host permits a plugin one open dialog at a time, so a dialog per selected
+// node loses every node after the first, silently (see runAction). Asking once is also the honest
+// shape of the question — "with its volumes?" has one answer for a set the user picked together.
+
+func (s *Service) openRemoveContainerDialog(ctx context.Context, conn *Connection, targets []target) {
+	title := fmt.Sprintf("Remove %d containers", len(targets))
+	if len(targets) == 1 {
+		title = "Remove " + s.containerName(ctx, conn, targets[0].dockerID)
+	}
+	s.openDialog(ctx, "form", title, "Remove", []section{
 		{ID: "options", Label: "Remove options", Order: 1, Fields: []field{
 			{ID: "force", Label: "Force", Type: "checkbox", Order: 1,
-				Description: "Remove it even if it is running."},
+				Description: "Remove them even if they are running."},
 			{ID: "volumes", Label: "Remove anonymous volumes", Type: "checkbox", Order: 2,
 				Description: "Named volumes are never touched."},
 		}},
 	}, nil, func(ctx context.Context, values map[string]string) error {
-		client, err := conn.Control(ctx)
-		if err != nil {
-			return err
-		}
-		if err := client.RemoveContainer(ctx, containerID, values["force"] == "true", values["volumes"] == "true"); err != nil {
-			return err
-		}
-		s.refreshAll(ctx, conn)
-		return nil
+		return s.removeEach(ctx, conn, targets, func(client *dockerapi.Client, t target) error {
+			return client.RemoveContainer(ctx, t.dockerID, values["force"] == "true", values["volumes"] == "true")
+		})
 	})
 }
 
-func (s *Service) openRemoveImageDialog(ctx context.Context, conn *Connection, imageID string) {
-	s.openDialog(ctx, "form", "Remove image", "Remove", []section{
+func (s *Service) openRemoveImageDialog(ctx context.Context, conn *Connection, targets []target) {
+	title := "Remove image"
+	if len(targets) > 1 {
+		title = fmt.Sprintf("Remove %d images", len(targets))
+	}
+	s.openDialog(ctx, "form", title, "Remove", []section{
 		{ID: "options", Label: "Remove options", Order: 1, Fields: []field{
 			{ID: "force", Label: "Force", Type: "checkbox", Order: 1,
-				Description: "Remove it even if containers reference it."},
+				Description: "Remove them even if containers reference them."},
 			{ID: "noprune", Label: "Keep untagged parents", Type: "checkbox", Order: 2},
 		}},
 	}, nil, func(ctx context.Context, values map[string]string) error {
-		client, err := conn.Control(ctx)
-		if err != nil {
-			return err
-		}
-		if err := client.RemoveImage(ctx, imageID, values["force"] == "true", values["noprune"] == "true"); err != nil {
-			return err
-		}
-		s.refreshAll(ctx, conn)
-		return nil
+		return s.removeEach(ctx, conn, targets, func(client *dockerapi.Client, t target) error {
+			return client.RemoveImage(ctx, t.dockerID, values["force"] == "true", values["noprune"] == "true")
+		})
 	})
 }
 
-func (s *Service) openRemoveVolumeDialog(ctx context.Context, conn *Connection, name string) {
-	s.openDialog(ctx, "form", "Remove volume "+name, "Remove", []section{
+func (s *Service) openRemoveVolumeDialog(ctx context.Context, conn *Connection, targets []target) {
+	title := fmt.Sprintf("Remove %d volumes", len(targets))
+	if len(targets) == 1 {
+		// A volume's Docker id is its name, so the title can name it without a lookup.
+		title = "Remove volume " + targets[0].dockerID
+	}
+	s.openDialog(ctx, "form", title, "Remove", []section{
 		{ID: "options", Label: "Remove options", Order: 1, Fields: []field{
 			{ID: "force", Label: "Force", Type: "checkbox", Order: 1},
 		}},
 	}, nil, func(ctx context.Context, values map[string]string) error {
-		client, err := conn.Control(ctx)
-		if err != nil {
-			return err
-		}
-		if err := client.RemoveVolume(ctx, name, values["force"] == "true"); err != nil {
-			return err
-		}
-		s.refreshAll(ctx, conn)
-		return nil
+		return s.removeEach(ctx, conn, targets, func(client *dockerapi.Client, t target) error {
+			return client.RemoveVolume(ctx, t.dockerID, values["force"] == "true")
+		})
 	})
+}
+
+// removeEach applies an answered remove to every target, refreshes once, and returns nothing.
+//
+// The per-target failures are reported here rather than returned, because they are a LIST and the
+// dialog machinery carries one error. Only the failure that stops the whole batch before it starts
+// — no reachable daemon — travels back as an error.
+func (s *Service) removeEach(ctx context.Context, conn *Connection, targets []target, remove func(*dockerapi.Client, target) error) error {
+	client, err := conn.Control(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []failure
+	for _, t := range targets {
+		if err := remove(client, t); err != nil {
+			failures = append(failures, failure{label: s.targetLabel(ctx, conn, t), err: err})
+		}
+	}
+	// Refreshed before the report: whatever did succeed leaves the tree while the user reads why the
+	// rest did not, rather than after they dismiss it.
+	s.refreshAll(ctx, conn)
+	s.reportBatch(ctx, conn, failures)
+	return nil
 }
 
 // --- messages ---------------------------------------------------------------

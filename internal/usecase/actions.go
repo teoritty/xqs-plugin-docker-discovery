@@ -66,7 +66,7 @@ func containerActions(state string) []Action {
 		Action{ID: ActionContainerInspect, Label: "Inspect"},
 		// Remove opens a dialog rather than carrying a confirm string: the question is not "are you
 		// sure" but "with its volumes?", and only a form can ask that.
-		Action{ID: ActionContainerRemove, Label: "Remove…", Danger: true, Multi: true},
+		Action{ID: ActionContainerRemove, Label: "Remove…", Danger: true, Multi: true, Delete: true},
 	)
 	return actions
 }
@@ -74,14 +74,14 @@ func containerActions(state string) []Action {
 func imageActions() []Action {
 	return []Action{
 		{ID: ActionImageInspect, Label: "Inspect"},
-		{ID: ActionImageRemove, Label: "Remove…", Danger: true, Multi: true},
+		{ID: ActionImageRemove, Label: "Remove…", Danger: true, Multi: true, Delete: true},
 	}
 }
 
 func volumeActions() []Action {
 	return []Action{
 		{ID: ActionVolumeInspect, Label: "Inspect"},
-		{ID: ActionVolumeRemove, Label: "Remove…", Danger: true, Multi: true},
+		{ID: ActionVolumeRemove, Label: "Remove…", Danger: true, Multi: true, Delete: true},
 	}
 }
 
@@ -95,5 +95,5 @@ func networkActions(name string) []Action {
 		return actions
 	}
 	return append(actions, Action{ID: ActionNetworkRemove, Label: "Remove", Danger: true, Multi: true,
-		Confirm: "Remove the selected networks?"})
+		Delete: true, Confirm: "Remove the selected networks?"})
 }
