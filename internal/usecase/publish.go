@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"log/slog"
+	"sort"
 
 	"github.com/teoritty/xqs-plugin-docker-discovery/internal/domain"
 )
@@ -28,6 +29,11 @@ func (s *Service) publish(ctx context.Context, conn *Connection, nodeID string, 
 	if errMessage != "" {
 		payload["error"] = errMessage
 	}
+	if state == "error" && errMessage != "" {
+		// Logged at warn, because "the Docker node is empty" is otherwise the only symptom and it
+		// names no cause. The message is the same one the row carries.
+		slog.Warn("branch failed", "component", "docker", "node", nodeID, "reason", errMessage)
+	}
 	if _, err := s.host.Call(ctx, "discovery.publish", payload); err != nil {
 		// A publish for a branch the user collapsed, or a session that stopped leading, is accepted
 		// and dropped by the host — an ordinary race, not something to retry or report.
@@ -43,9 +49,13 @@ func (s *Service) refreshBranch(ctx context.Context, conn *Connection, nodeID st
 	if !conn.Observes(nodeID) {
 		return
 	}
-	// loading first, so a slow daemon shows a branch that is working rather than one that is empty.
-	s.publish(ctx, conn, nodeID, nil, "loading", "")
-
+	// NO "loading" snapshot first. A publish REPLACES a branch (ADR-014), so an empty one to say
+	// "working on it" deletes the branch's children — and the host then sheds those ids from the
+	// observed set, so the real snapshot that follows arrives for a node nobody is watching and is
+	// accepted and dropped. That is what made the Docker node expand into nothing.
+	//
+	// One publish per branch, carrying what is actually there. A branch is briefly absent instead of
+	// briefly empty, which is the same wait without the destruction.
 	client, err := conn.Control(ctx)
 	if err != nil {
 		s.publish(ctx, conn, nodeID, nil, "error", userMessage(err))
@@ -138,9 +148,37 @@ func (s *Service) publishRootGroups(ctx context.Context, conn *Connection) {
 	s.publish(ctx, conn, domain.NodeRoot, buildRoot(counts), "ready", "")
 }
 
-// refreshAll re-enumerates every branch the user has open.
+// refreshAll re-enumerates every branch the user has open, parents first.
+//
+// The order is not cosmetic. A parent's snapshot replaces its children, so publishing a parent
+// AFTER a child briefly removes the child and makes the host shed it from the observed set — and
+// ObservedNodes is backed by a map, whose iteration order Go randomises, so getting this wrong
+// fails intermittently and looks like a daemon problem.
 func (s *Service) refreshAll(ctx context.Context, conn *Connection) {
-	for _, nodeID := range conn.ObservedNodes() {
+	for _, nodeID := range orderedBranches(conn.ObservedNodes()) {
+		if conn.Gone() {
+			return
+		}
 		s.refreshBranch(ctx, conn, nodeID)
 	}
+}
+
+// orderedBranches sorts observed nodes so a parent always precedes its children: the connection
+// root, then the Docker node, then the four groups, then anything else.
+func orderedBranches(nodeIDs []string) []string {
+	rank := func(id string) int {
+		switch id {
+		case "":
+			return 0
+		case domain.NodeRoot:
+			return 1
+		case domain.NodeContainers, domain.NodeImages, domain.NodeVolumes, domain.NodeNetworks:
+			return 2
+		default:
+			return 3
+		}
+	}
+	out := append([]string(nil), nodeIDs...)
+	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	return out
 }

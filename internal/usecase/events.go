@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -51,9 +52,18 @@ func (s *Service) ensureEventWatcher(conn *Connection) {
 // watchEvents follows /events and refreshes the branches an event touched.
 func (s *Service) watchEvents(ctx context.Context, conn *Connection) {
 	for ctx.Err() == nil {
-		if err := s.followEvents(ctx, conn); err != nil && ctx.Err() == nil {
-			// A dropped stream is expected — the SSH session bounces, the daemon restarts — and
-			// reconnecting after a pause beats spinning on a host that is not answering.
+		err := s.followEvents(ctx, conn)
+		if errors.Is(err, ErrSessionGone) || conn.Gone() {
+			// Terminal. The tab this subtree rode has closed, and every further attempt would be
+			// refused by the host for a session it has forgotten — which is what turned a closed
+			// tab into an endless stream of denied channel.open in the host's log.
+			slog.Info("session closed, dropping its docker state", "component", "docker")
+			s.forget(conn.SessionID())
+			return
+		}
+		if err != nil && ctx.Err() == nil {
+			// An ordinary drop: the daemon restarted, or the stream ended. Reconnecting after a
+			// pause beats spinning on a host that is not answering.
 			slog.Debug("event stream ended", "err", err)
 			select {
 			case <-ctx.Done():
@@ -157,6 +167,9 @@ func (s *Service) reconcile(ctx context.Context, conn *Connection) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if conn.Gone() {
+				return
+			}
 			refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			s.refreshAll(refreshCtx, conn)
 			cancel()

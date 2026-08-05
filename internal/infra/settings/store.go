@@ -16,8 +16,7 @@ import (
 	"github.com/teoritty/xqs-plugin-docker-discovery/internal/usecase"
 )
 
-// FS is the host's sandboxed filesystem RPC. Paths must start with ${pluginData}; anything else is
-// refused by the capability gate.
+// FS is the host's sandboxed filesystem RPC.
 type FS interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	WriteFile(ctx context.Context, path string, data []byte) error
@@ -78,12 +77,18 @@ func (s *Store) Save(connectionID string, settings map[string]usecase.ResourceSe
 
 // pathFor builds the file name for a connection.
 //
-// The connection id is base64url-encoded rather than interpolated. It is a host-generated id today,
-// but it reaches this function as a string that becomes a path, and encoding it means no value it
-// could ever hold produces a traversal — the check does not depend on what the host promises.
+// RELATIVE, deliberately. ${pluginData} is a manifest-pattern placeholder — the host expands it
+// when it resolves the capability's roots, not when it resolves a request path. A request path that
+// contains it is taken literally, which is how this plugin first shipped: every read asked for a
+// file named "${pluginData}" inside the plugin's data directory. A relative path is joined to that
+// directory, which is what was meant.
+//
+// The connection id is base64url-encoded rather than interpolated. It is host-generated today, but
+// it reaches this function as a string that becomes a path, and encoding it means no value it could
+// ever hold produces a traversal — the guarantee does not depend on what the host promises.
 func pathFor(connectionID string) string {
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(connectionID))
-	return "${pluginData}/settings/" + encoded + ".json"
+	return "settings/" + encoded + ".json"
 }
 
 func copySettings(in map[string]usecase.ResourceSettings) map[string]usecase.ResourceSettings {

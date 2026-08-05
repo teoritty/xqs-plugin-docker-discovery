@@ -62,11 +62,13 @@ func (c *Client) Negotiate(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer body.Close()
-
 	var v versionResponse
-	if err := json.NewDecoder(body).Decode(&v); err != nil {
-		return "", fmt.Errorf("dockerapi: decode version: %w", err)
+	decodeErr := json.NewDecoder(body).Decode(&v)
+	// Closed BEFORE the lock is taken below, not deferred: the body now HOLDS that lock (see do),
+	// so deferring the close would have this function wait for a lock it is itself holding.
+	_ = body.Close()
+	if decodeErr != nil {
+		return "", fmt.Errorf("dockerapi: decode version: %w", decodeErr)
 	}
 	negotiated := MaxAPIVersion
 	if v.APIVersion != "" && compareVersions(v.APIVersion, MaxAPIVersion) < 0 {
@@ -155,26 +157,58 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 }
 
 // do performs one HTTP exchange on the stream.
+//
+// The lock is held until the RESPONSE BODY IS CLOSED, not until the headers are read. On a
+// keep-alive connection there are no request ids: the next request's response is whatever bytes
+// come next, so releasing the lock with a body still unread lets a second caller write its request
+// and then read the first caller's body as its own answer. Both sides parse fine and the data is
+// simply wrong, which is the worst shape a bug can take.
+//
+// The unlock therefore rides on the body: every caller already closes it, and a caller that forgets
+// deadlocks itself immediately rather than corrupting someone else's read.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body []byte) (io.ReadCloser, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			c.mu.Unlock()
+		}
+	}
 
 	req, err := buildRequest(ctx, method, path, query, body)
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	if err := req.Write(c.conn); err != nil {
+		unlock()
 		return nil, fmt.Errorf("dockerapi: send request: %w", err)
 	}
 	resp, err := http.ReadResponse(c.reader, req)
 	if err != nil {
+		unlock()
 		return nil, fmt.Errorf("dockerapi: read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
-		return nil, decodeAPIError(resp.StatusCode, resp.Body)
+		apiErr := decodeAPIError(resp.StatusCode, resp.Body)
+		_ = resp.Body.Close()
+		unlock()
+		return nil, apiErr
 	}
-	return resp.Body, nil
+	return &lockedBody{ReadCloser: resp.Body, release: unlock}, nil
+}
+
+// lockedBody releases the client's request lock when the body is closed.
+type lockedBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *lockedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.release()
+	return err
 }
 
 // buildRequest assembles a request against the daemon's virtual host.

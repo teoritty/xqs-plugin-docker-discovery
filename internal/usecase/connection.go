@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/teoritty/xqs-plugin-docker-discovery/internal/domain"
@@ -34,6 +35,14 @@ type Connection struct {
 
 // ErrNoDocker reports that the daemon could not be reached on this connection.
 var ErrNoDocker = errors.New("docker is not reachable on this host")
+
+// ErrSessionGone reports that the host no longer holds the session this connection rides.
+//
+// Terminal for the connection, not a transient failure: the session id was minted for an SSH tab
+// that has closed, and no amount of retrying makes the host bind it again. Everything for that
+// session stops when this appears — without it the plugin reconnects forever against an id the host
+// has forgotten, which is exactly the flood of denied channel.open a live run produced.
+var ErrSessionGone = errors.New("the session this subtree rides has closed")
 
 // NewConnection creates the per-session state.
 func NewConnection(sessionID string, streams Streams, newClient dockerClientFactory) *Connection {
@@ -99,6 +108,10 @@ func (c *Connection) OpenStream(ctx context.Context) (*dockerapi.Client, error) 
 func (c *Connection) dial(ctx context.Context) (*dockerapi.Client, error) {
 	stream, err := c.streams.OpenExec(ctx, c.sessionID)
 	if err != nil {
+		if isSessionGone(err) {
+			c.markGone()
+			return nil, ErrSessionGone
+		}
 		return nil, err
 	}
 	client := c.newClient(stream)
@@ -107,6 +120,39 @@ func (c *Connection) dial(ctx context.Context) (*dockerapi.Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+// isSessionGone reports whether the host refused because it does not hold this session.
+//
+// Matched on the host's wording as well as its error code: the code says "denied", and only the
+// message distinguishes "you may not do this at all" from "not for this session, which has closed".
+// Treating the first as terminal too would be wrong — a missing capability is a reason to stop
+// asking, but it is not this connection's problem to report.
+func isSessionGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "session not bound") || strings.Contains(text, "session not found")
+}
+
+// markGone closes the connection for good.
+func (c *Connection) markGone() {
+	c.mu.Lock()
+	c.closed = true
+	client := c.control
+	c.control = nil
+	c.mu.Unlock()
+	if client != nil {
+		_ = client.Close()
+	}
+}
+
+// Gone reports whether this connection's session has closed.
+func (c *Connection) Gone() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // SetObserved replaces the expanded-node set. Level-triggered: what arrives is the whole truth

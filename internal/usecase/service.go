@@ -170,6 +170,28 @@ func (s *Service) report(ctx context.Context, conn *Connection, err error) {
 	s.openMessageDialog(ctx, conn, "Docker refused this", userMessage(err))
 }
 
+// forget drops everything belonging to a session the host no longer holds: its state, its event
+// watcher and any tab still feeding from it.
+//
+// Without this the plugin keeps one Connection per session it has ever seen, each with a watcher
+// retrying against an id that will never be bound again. A reconnect creates a new session, so the
+// leak grows one dead watcher per reconnect.
+func (s *Service) forget(sessionID string) {
+	s.mu.Lock()
+	conn := s.connections[sessionID]
+	delete(s.connections, sessionID)
+	w := s.watchers[sessionID]
+	delete(s.watchers, sessionID)
+	s.mu.Unlock()
+
+	if w != nil && w.cancel != nil {
+		w.cancel()
+	}
+	if conn != nil {
+		conn.Close()
+	}
+}
+
 // connection returns the per-session state, creating it on first sight.
 func (s *Service) connection(sessionID string) *Connection {
 	s.mu.Lock()

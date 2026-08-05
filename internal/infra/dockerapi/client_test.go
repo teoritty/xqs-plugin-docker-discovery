@@ -285,3 +285,55 @@ func TestDeadlinesAreRefusedRatherThanIgnored(t *testing.T) {
 		t.Fatal("SetDeadline must report that it does nothing")
 	}
 }
+
+// The request lock is released by closing the body, so a caller that takes the lock again while
+// still holding one deadlocks. Negotiate does exactly that — it sets the version afterwards — and
+// got it wrong once; this pins the fix rather than the symptom.
+func TestNegotiateDoesNotDeadlockOnItsOwnLock(t *testing.T) {
+	d := newFakeDaemon(t)
+	c := NewClient(d.client)
+	d.reply(t, body(`{"ApiVersion":"1.41","Version":"20.10.7"}`))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Negotiate(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Negotiate: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Negotiate deadlocked against the lock its own response body holds")
+	}
+}
+
+// Two sequential requests must each read their own answer. With the lock released at the headers
+// instead of at the body, the second call reads the first call's body and both parse fine — the
+// worst shape a bug can take.
+func TestSequentialRequestsDoNotReadEachOthersBodies(t *testing.T) {
+	d := newFakeDaemon(t)
+	c := NewClient(d.client)
+	d.reply(t, body(`{"ApiVersion":"`+MaxAPIVersion+`"}`))
+	if _, err := c.Negotiate(context.Background()); err != nil {
+		t.Fatalf("Negotiate: %v", err)
+	}
+
+	d.reply(t, body(`[{"Id":"aaa","Names":["/first"],"State":"running"}]`))
+	first, err := c.ListContainers(context.Background())
+	if err != nil {
+		t.Fatalf("first list: %v", err)
+	}
+	d.reply(t, body(`[{"Id":"bbb","Names":["/second"],"State":"exited"}]`))
+	second, err := c.ListContainers(context.Background())
+	if err != nil {
+		t.Fatalf("second list: %v", err)
+	}
+	if len(first) != 1 || first[0].Name() != "first" {
+		t.Fatalf("first = %+v", first)
+	}
+	if len(second) != 1 || second[0].Name() != "second" {
+		t.Fatalf("second read the wrong response: %+v", second)
+	}
+}
