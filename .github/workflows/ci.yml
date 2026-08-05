@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      # -race is not a nicety here: the plugin is goroutines around one stdio pipe, and a data race
+      # in that would show up as a corrupted frame the host kills the process for.
+      - name: Test
+        run: go test ./... -count=1 -race
+      - name: Cross-compile
+        run: make build-all
