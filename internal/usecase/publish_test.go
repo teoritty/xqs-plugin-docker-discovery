@@ -97,3 +97,76 @@ func TestImageUsageIsMatchedOnTheImageID(t *testing.T) {
 		t.Fatalf("a dangling image is the one worth pointing at: %+v", dangling)
 	}
 }
+
+// Volume usage is derived from the containers, because the daemon reports it on neither endpoint.
+// A bind mount carries no Name and must not be counted: it names nothing on this list, and counting
+// it would paint an unrelated volume green.
+func TestVolumeUsageComesFromNamedMountsOnly(t *testing.T) {
+	volumes := []dockerapi.Volume{
+		{Name: "db-data", Driver: "local", Mountpoint: "/var/lib/docker/volumes/db-data"},
+		{Name: "orphan", Driver: "local"},
+	}
+	containers := []dockerapi.Container{
+		{ID: "c1", Mounts: []dockerapi.Mount{{Type: "volume", Name: "db-data"}}},
+		{ID: "c2", Mounts: []dockerapi.Mount{
+			{Type: "volume", Name: "db-data"},
+			{Type: "bind", Name: ""},
+		}},
+	}
+	byLabel := map[string]*Status{}
+	for _, node := range volumeNodes(volumes, containers) {
+		byLabel[node.Label] = node.Status
+	}
+
+	if byLabel["db-data"] == nil || byLabel["db-data"].Tone != "ok" {
+		t.Fatalf("a mounted volume should read as in use: %+v", byLabel["db-data"])
+	}
+	if !strings.Contains(byLabel["db-data"].Tooltip, "2 containers") {
+		t.Fatalf("tooltip = %q", byLabel["db-data"].Tooltip)
+	}
+	if byLabel["orphan"] == nil || byLabel["orphan"].Tone != "warn" {
+		t.Fatalf("an unmounted volume is the one worth pointing at: %+v", byLabel["orphan"])
+	}
+}
+
+// A container's NetworkSettings.Networks is keyed by network NAME, so that is what the count must be
+// built on — matching against the id would count nothing and paint every network amber.
+func TestNetworkUsageIsMatchedOnTheNetworkName(t *testing.T) {
+	networks := []dockerapi.Network{
+		{ID: "netid-app", Name: "app-net", Driver: "bridge", Scope: "local"},
+		{ID: "netid-idle", Name: "idle-net", Driver: "bridge", Scope: "local"},
+		{ID: "netid-bridge", Name: "bridge", Driver: "bridge", Scope: "local"},
+	}
+	containers := []dockerapi.Container{
+		{ID: "c1", NetworkSettings: dockerapi.NetworkSettings{
+			Networks: map[string]struct{}{"app-net": {}, "bridge": {}},
+		}},
+	}
+	byLabel := map[string]*Status{}
+	for _, node := range networkNodes(networks, containers) {
+		byLabel[node.Label] = node.Status
+	}
+
+	if byLabel["app-net"] == nil || byLabel["app-net"].Tone != "ok" {
+		t.Fatalf("an attached network should read as in use: %+v", byLabel["app-net"])
+	}
+	if byLabel["idle-net"] == nil || byLabel["idle-net"].Tone != "warn" {
+		t.Fatalf("an empty user network is a removal candidate: %+v", byLabel["idle-net"])
+	}
+	// bridge has a container on it and stays neutral: it is not the user's to remove.
+	if byLabel["bridge"] == nil || byLabel["bridge"].Tone != "neutral" {
+		t.Fatalf("a built-in network stays neutral: %+v", byLabel["bridge"])
+	}
+}
+
+// The driver used to be glued onto the label behind two spaces, which made every row read as a name
+// with something stuck to it. It belongs in the tooltip, which now exists.
+func TestNetworkLabelIsJustTheName(t *testing.T) {
+	nodes := networkNodes([]dockerapi.Network{{ID: "n1", Name: "app-net", Driver: "bridge"}}, nil)
+	if nodes[0].Label != "app-net" {
+		t.Fatalf("label = %q", nodes[0].Label)
+	}
+	if !strings.Contains(nodes[0].Status.Tooltip, "bridge") {
+		t.Fatalf("the driver must still be reachable: %q", nodes[0].Status.Tooltip)
+	}
+}

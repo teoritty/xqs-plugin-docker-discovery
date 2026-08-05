@@ -183,3 +183,60 @@ func TestClassOfDistinguishesGroupsFromInstances(t *testing.T) {
 		}
 	}
 }
+
+// A volume nothing mounts is amber, not grey. That is the one way this differs from an image: an
+// unused image is a cache, an unused volume is data nothing can reach any more, and it is the case
+// a person scans the list for.
+func TestVolumeStatusMarksWhatNothingMounts(t *testing.T) {
+	used := VolumeStatus(VolumeState{Driver: "local", Mountpoint: "/var/lib/docker/volumes/db", Users: 2})
+	if used.Tone != ToneOK {
+		t.Fatalf("a mounted volume should read as in use: %+v", used)
+	}
+	if !strings.Contains(used.Tooltip, "2 containers") || !strings.Contains(used.Tooltip, "local") {
+		t.Fatalf("tooltip = %q", used.Tooltip)
+	}
+
+	idle := VolumeStatus(VolumeState{Driver: "local", Users: 0})
+	if idle.Tone != ToneWarn {
+		t.Fatalf("an unmounted volume is the one worth pointing at: %+v", idle)
+	}
+
+	// Singular and plural, because "Used by 1 containers" is the kind of detail that makes a tooltip
+	// look machine-written.
+	if one := VolumeStatus(VolumeState{Users: 1}); !strings.Contains(one.Tooltip, "1 container\n") &&
+		!strings.HasSuffix(one.Tooltip, "1 container") {
+		t.Fatalf("tooltip = %q", one.Tooltip)
+	}
+}
+
+// Docker's own three networks are neutral whatever is attached: the user did not create them and
+// cannot remove them, so colouring them by usage puts attention where no decision exists.
+func TestNetworkStatusLeavesTheBuiltInsAlone(t *testing.T) {
+	for _, name := range []string{"bridge", "host", "none"} {
+		got := NetworkStatus(NetworkState{Name: name, Driver: name, Scope: "local", Users: 7})
+		if got.Tone != ToneNeutral {
+			t.Fatalf("%s should stay neutral, got %+v", name, got)
+		}
+		if !strings.Contains(got.Tooltip, "Built-in") {
+			t.Fatalf("%s tooltip = %q", name, got.Tooltip)
+		}
+	}
+}
+
+func TestNetworkStatusMarksUserNetworksByAttachment(t *testing.T) {
+	attached := NetworkStatus(NetworkState{Name: "app-net", Driver: "bridge", Scope: "local", Users: 3})
+	if attached.Tone != ToneOK || !strings.Contains(attached.Tooltip, "3 containers") {
+		t.Fatalf("an attached network should read as in use: %+v", attached)
+	}
+
+	empty := NetworkStatus(NetworkState{Name: "app-net", Driver: "bridge", Scope: "local"})
+	if empty.Tone != ToneWarn {
+		t.Fatalf("an empty user network is a removal candidate: %+v", empty)
+	}
+
+	// Internal is a property of the network, not of its use, so it appears either way.
+	internal := NetworkStatus(NetworkState{Name: "app-net", Driver: "bridge", Internal: true, Users: 1})
+	if !strings.Contains(internal.Tooltip, "internal") {
+		t.Fatalf("tooltip = %q", internal.Tooltip)
+	}
+}

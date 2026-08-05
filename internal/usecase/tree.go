@@ -212,13 +212,34 @@ func imageLabel(image dockerapi.Image) string {
 	return "<untagged> " + id
 }
 
-func volumeNodes(volumes []dockerapi.Volume) []Node {
+// volumeNodes turns the volume list into rows, marking which ones something still mounts.
+//
+// Same derivation as images and for the same reason: "is anything using this" is the question the
+// list is opened to answer, the daemon reports it on neither endpoint, and the container list
+// already fetched for the counts carries it. A volume is matched by NAME, which is also its id.
+func volumeNodes(volumes []dockerapi.Volume, containers []dockerapi.Container) []Node {
+	usedBy := make(map[string]int, len(volumes))
+	for _, container := range containers {
+		for _, mount := range container.Mounts {
+			// Only named volumes: a bind mount has no Name and names nothing on this list.
+			if mount.Name != "" {
+				usedBy[mount.Name]++
+			}
+		}
+	}
+
 	nodes := make([]Node, 0, len(volumes))
 	for _, volume := range volumes {
+		status := domain.VolumeStatus(domain.VolumeState{
+			Driver:     volume.Driver,
+			Mountpoint: volume.Mountpoint,
+			Users:      usedBy[volume.Name],
+		})
 		nodes = append(nodes, Node{
 			ID:      domain.InstanceID(domain.KindVolume, volume.Name),
 			Kind:    "instance",
 			Label:   volume.Name,
+			Status:  &Status{Tone: string(status.Tone), Tooltip: status.Tooltip},
 			Actions: volumeActions(),
 		})
 	}
@@ -226,17 +247,33 @@ func volumeNodes(volumes []dockerapi.Volume) []Node {
 	return nodes
 }
 
-func networkNodes(networks []dockerapi.Network) []Node {
+// networkNodes turns the network list into rows, marking which ones have containers on them.
+//
+// A container's NetworkSettings.Networks is keyed by network NAME, so that is what the count is
+// built on. The driver moves into the tooltip: it used to be glued onto the label behind two
+// spaces, which made every row read as a name with something stuck to it.
+func networkNodes(networks []dockerapi.Network, containers []dockerapi.Container) []Node {
+	usedBy := make(map[string]int, len(networks))
+	for _, container := range containers {
+		for name := range container.NetworkSettings.Networks {
+			usedBy[name]++
+		}
+	}
+
 	nodes := make([]Node, 0, len(networks))
 	for _, network := range networks {
-		label := network.Name
-		if network.Driver != "" {
-			label += "  " + network.Driver
-		}
+		status := domain.NetworkStatus(domain.NetworkState{
+			Name:     network.Name,
+			Driver:   network.Driver,
+			Scope:    network.Scope,
+			Internal: network.Internal,
+			Users:    usedBy[network.Name],
+		})
 		nodes = append(nodes, Node{
 			ID:      domain.InstanceID(domain.KindNetwork, network.ID),
 			Kind:    "instance",
-			Label:   label,
+			Label:   network.Name,
+			Status:  &Status{Tone: string(status.Tone), Tooltip: status.Tooltip},
 			Actions: networkActions(network.Name),
 		})
 	}

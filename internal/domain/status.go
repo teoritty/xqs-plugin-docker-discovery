@@ -95,6 +95,77 @@ func exitedStatus(s ContainerState) Status {
 	return Status{Tone: ToneError, Tooltip: describe(fmt.Sprintf("%s · exit %d", s.StatusText, s.ExitCode), s)}
 }
 
+// VolumeState is what a volume's dot depends on.
+type VolumeState struct {
+	Driver     string
+	Mountpoint string
+	// Users is how many containers mount it. The daemon reports it nowhere on the volume list, so
+	// the caller derives it from the container list.
+	Users int
+}
+
+// VolumeStatus marks a volume by what mounts it.
+//
+// Unused is `warn`, not `neutral`, and that is the one place this differs from an image: an unused
+// image is a cache and costs nothing to keep, whereas an unused volume is data nothing can reach
+// any more — Docker itself calls those dangling, and it is the case a person scans this list for.
+func VolumeStatus(s VolumeState) Status {
+	where := joinLines(s.Driver, s.Mountpoint)
+	if s.Users > 0 {
+		return Status{Tone: ToneOK, Tooltip: joinLines(countUsers(s.Users), where)}
+	}
+	return Status{Tone: ToneWarn, Tooltip: joinLines("Dangling: no container mounts it", where)}
+}
+
+// NetworkState is what a network's dot depends on.
+type NetworkState struct {
+	Name     string
+	Driver   string
+	Scope    string
+	Internal bool
+	// Users is how many containers are attached.
+	Users int
+}
+
+// NetworkStatus marks a network by what is attached to it.
+//
+// Docker's own three are neutral whatever is attached: they are not something a user created and
+// not something they can remove, so colouring them by usage would put attention on the three rows
+// where no decision exists.
+func NetworkStatus(s NetworkState) Status {
+	detail := joinLines(s.Driver, s.Scope)
+	if s.Internal {
+		detail = joinLines(detail, "internal: no outbound access")
+	}
+	switch s.Name {
+	case "bridge", "host", "none":
+		return Status{Tone: ToneNeutral, Tooltip: joinLines("Built-in", detail)}
+	}
+	if s.Users > 0 {
+		return Status{Tone: ToneOK, Tooltip: joinLines(countUsers(s.Users), detail)}
+	}
+	return Status{Tone: ToneWarn, Tooltip: joinLines("Unused: no containers attached", detail)}
+}
+
+func countUsers(n int) string {
+	if n == 1 {
+		return "Used by 1 container"
+	}
+	return fmt.Sprintf("Used by %d containers", n)
+}
+
+// joinLines assembles a tooltip out of parts, dropping the empty ones rather than rendering them as
+// blank lines.
+func joinLines(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // describe assembles the tooltip: what the container is doing, then what it is and where it is
 // reachable. Empty parts are dropped rather than rendered as blanks.
 func describe(headline string, s ContainerState) string {

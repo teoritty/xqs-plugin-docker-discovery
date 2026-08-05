@@ -35,6 +35,27 @@ type Container struct {
 	Status  string `json:"Status"`
 	Ports   []Port `json:"Ports"`
 	Labels  map[string]string
+	// Mounts and NetworkSettings are what makes a volume's and a network's dot mean something. The
+	// daemon does not report "is anything using this volume" on either list endpoint, so it is
+	// derived from the containers — exactly as image usage already is, and out of the same list, so
+	// it costs no extra request.
+	Mounts          []Mount         `json:"Mounts"`
+	NetworkSettings NetworkSettings `json:"NetworkSettings"`
+}
+
+// Mount is one thing mounted into a container. Name is empty for a bind mount, which is the whole
+// distinction that matters here: only a named volume can be pointed at from the volume list.
+type Mount struct {
+	Type string `json:"Type"`
+	Name string `json:"Name"`
+}
+
+// NetworkSettings carries the networks a container is attached to, keyed by network NAME.
+//
+// The name, not the id, is what the map is keyed by — so matching a network row against it means
+// matching on Network.Name. Two networks may not share a name, so this is unambiguous.
+type NetworkSettings struct {
+	Networks map[string]struct{} `json:"Networks"`
 }
 
 // Port is one published port mapping.

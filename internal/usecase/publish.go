@@ -95,14 +95,26 @@ func (s *Service) refreshBranch(ctx context.Context, conn *Connection, nodeID st
 			s.publish(ctx, conn, nodeID, nil, "error", userMessage(err))
 			return
 		}
-		s.publish(ctx, conn, nodeID, volumeNodes(volumes), "ready", "")
+		// Containers too: whether anything mounts a volume is derived, not reported. A failure here
+		// loses the marks, not the list — same trade as the image branch above.
+		containers, err := client.ListContainers(ctx)
+		if err != nil {
+			slog.Debug("volume usage unavailable", "err", err)
+			containers = nil
+		}
+		s.publish(ctx, conn, nodeID, volumeNodes(volumes, containers), "ready", "")
 	case domain.NodeNetworks:
 		networks, err := client.ListNetworks(ctx)
 		if err != nil {
 			s.publish(ctx, conn, nodeID, nil, "error", userMessage(err))
 			return
 		}
-		s.publish(ctx, conn, nodeID, networkNodes(networks), "ready", "")
+		containers, err := client.ListContainers(ctx)
+		if err != nil {
+			slog.Debug("network usage unavailable", "err", err)
+			containers = nil
+		}
+		s.publish(ctx, conn, nodeID, networkNodes(networks, containers), "ready", "")
 	}
 }
 
