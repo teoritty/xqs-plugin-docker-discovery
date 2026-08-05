@@ -28,6 +28,40 @@ jobs:
       - name: Build and pack
         run: make pack
 
+      # Two shapes, because the host has two install routes and they want different things.
+      #
+      # "Add GitHub repository" reads xqsp.json from the repo, then downloads ONE asset per
+      # platform and stages it next to a manifest it writes itself. Its asset-name parser strips
+      # .exe/.zip/.tar.gz and nothing else, so a .xqsp name yields no platform at all and the
+      # install reports the platform as unsupported. That route needs the bare binaries below.
+      #
+      # "Install bundle…" takes a .xqsp, which is the only shape that also carries ui/icons — the
+      # GitHub route stages just the binary and the manifest, so a plugin installed that way draws
+      # its tree without icons.
+      - name: Stage release binaries
+        run: |
+          mkdir -p dist/release
+          cp dist/bin/windows-amd64/xqs-docker.exe dist/release/xqs-docker-windows-amd64.exe
+          cp dist/bin/linux-amd64/xqs-docker       dist/release/xqs-docker-linux-amd64
+          cp dist/bin/darwin-amd64/xqs-docker      dist/release/xqs-docker-darwin-amd64
+          cp dist/bin/darwin-arm64/xqs-docker      dist/release/xqs-docker-darwin-arm64
+          cp dist/*.xqsp dist/release/
+          cd dist/release && sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Check xqsp.json and plugin.json agree
+        # They are two files carrying the same manifest for two install routes. Letting them drift
+        # means one route installs a plugin the other would refuse, and nothing says which is right.
+        run: |
+          for field in id version; do
+            a=$(grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" plugin.json | head -1)
+            b=$(grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" xqsp.json  | head -1)
+            if [ "$a" != "$b" ]; then
+              echo "plugin.json and xqsp.json disagree on $field: [$a] vs [$b]" >&2
+              exit 1
+            fi
+          done
+
       - name: Check the manifest version matches the tag
         # A bundle whose plugin.json says one version while the release says another is the kind of
         # mismatch nobody notices until an upgrade silently does nothing.
@@ -47,7 +81,8 @@ jobs:
           # real daemon is still ahead.
           prerelease: true
           generate_release_notes: true
-          files: dist/*.xqsp
+          files: |
+            dist/release/*
           body: |
             **Pre-release.** Not yet verified against a live Docker daemon or the host UI.
 
@@ -68,6 +103,13 @@ jobs:
             `exec`, and how any of the panels look.
 
             ### Install
-            Settings → Plugins → Install bundle… and pick the `.xqsp` for your platform. The install
-            asks for consent to run commands over your authenticated session; the plugin declares
-            exactly one, `docker system dial-stdio`.
+            Two routes, and they differ in what arrives:
+
+            - **Settings → Plugins → Install bundle…** with the `.xqsp` for your platform. This is
+              the complete bundle, icons included.
+            - **Add GitHub repository** reads `xqsp.json` and downloads the bare binary for your
+              platform. The host stages only the binary and the manifest, so the tree renders
+              without its icons — everything else works.
+
+            Either way the install asks for consent to run commands over your authenticated
+            session; the plugin declares exactly one, `docker system dial-stdio`.
