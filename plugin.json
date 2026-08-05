@@ -1,0 +1,54 @@
+{
+  "id": "io.xquakshell.plugin.docker",
+  "name": "Docker",
+  "version": "0.1.0",
+  "description": "Browse and manage Docker containers, images, volumes and networks under your SSH connections.",
+  "requires": {
+    "pluginApi": "1.0.0",
+    "capabilities": {
+      "discovery": { "min": "1.0.0", "features": ["publish", "invoke"] },
+      "channel": { "min": "1.0.0", "features": ["open"] },
+      "ui": {
+        "min": "1.0.0",
+        "features": ["surfaceTerminal", "surfaceLog", "dialogs", "nodeDetails"]
+      }
+    }
+  },
+  "engine": {
+    "type": "go-binary",
+    "entry": "xqs-docker.exe"
+  },
+  "isolation": "per-plugin",
+  "activationEvents": ["onStartup"],
+  "capabilities": {
+    "discovery": {
+      "parentProtocols": ["ssh"]
+    },
+    "channel": {
+      "purposes": ["exec"],
+      "maxConcurrent": 8,
+      "execCommands": [
+        { "argv": ["docker", "system", "dial-stdio"] }
+      ]
+    },
+    "filesystem": {
+      "read": ["${pluginData}"],
+      "write": ["${pluginData}"]
+    },
+    "ui": {
+      "surfaces": ["terminal", "log"],
+      "dialogs": true,
+      "nodeDetails": true,
+      "maxSurfaces": 8
+    }
+  },
+  "contributions": {
+    "discoveryIcons": [
+      { "id": "docker", "asset": "ui/icons/docker.svg" },
+      { "id": "containers", "asset": "ui/icons/containers.svg" },
+      { "id": "images", "asset": "ui/icons/images.svg" },
+      { "id": "volumes", "asset": "ui/icons/volumes.svg" },
+      { "id": "networks", "asset": "ui/icons/networks.svg" }
+    ]
+  }
+}
