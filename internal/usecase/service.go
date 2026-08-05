@@ -42,7 +42,12 @@ type surface struct {
 	closer func()
 	// execID is set for a console, so a resize can reach the right exec instance.
 	execID string
+	// client owns the stream this tab reads from. For a console it is the HIJACKED one: after the
+	// upgrade that connection is the shell's stdio and can never carry a request again.
 	client *dockerapi.Client
+	// conn is where a resize goes instead. Sending it down the hijacked connection would type an
+	// HTTP request into the user's shell — the resize must ride the ordinary request client.
+	conn *Connection
 }
 
 // pendingDialog is what to do with a dialog's answer.
@@ -238,6 +243,12 @@ func (sur *surface) stop() {
 	if sur.client != nil {
 		_ = sur.client.Close()
 	}
+}
+
+// ipcIsDenied reports whether the host refused on capability grounds — the answer will not change
+// on a retry, and it names something the user can act on (an install without the grant).
+func ipcIsDenied(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "denied")
 }
 
 // userMessage turns an error into something worth showing.

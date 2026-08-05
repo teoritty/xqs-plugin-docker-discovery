@@ -80,7 +80,15 @@ func (s *Service) refreshBranch(ctx context.Context, conn *Connection, nodeID st
 			s.publish(ctx, conn, nodeID, nil, "error", userMessage(err))
 			return
 		}
-		s.publish(ctx, conn, nodeID, imageNodes(images), "ready", "")
+		// Containers too, because "is anything using this image" is derived rather than reported.
+		// A failure here loses the marks, not the list: an image row without a usage dot is still a
+		// usable row.
+		containers, err := client.ListContainers(ctx)
+		if err != nil {
+			slog.Debug("image usage unavailable", "err", err)
+			containers = nil
+		}
+		s.publish(ctx, conn, nodeID, imageNodes(images, containers), "ready", "")
 	case domain.NodeVolumes:
 		volumes, err := client.ListVolumes(ctx)
 		if err != nil {

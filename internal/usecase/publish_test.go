@@ -1,7 +1,10 @@
 package usecase
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/teoritty/xqs-plugin-docker-discovery/internal/infra/dockerapi"
 
 	"github.com/teoritty/xqs-plugin-docker-discovery/internal/domain"
 )
@@ -49,5 +52,48 @@ func TestUnknownBranchesSortLast(t *testing.T) {
 	got := orderedBranches([]string{"docker/container/abc", ""})
 	if got[0] != "" || got[1] != "docker/container/abc" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// Usage is what a person opens the image list to decide, and the daemon does not report it. A
+// container's Image field is whatever it was started with — a tag, which may since have moved — so
+// the id is what must be matched.
+func TestImageUsageIsMatchedOnTheImageID(t *testing.T) {
+	images := []dockerapi.Image{
+		{ID: "sha256:used", RepoTags: []string{"nginx:1.25"}, Size: 1024 * 1024},
+		{ID: "sha256:idle", RepoTags: []string{"redis:7"}, Size: 2048},
+		{ID: "sha256:dangling", RepoTags: []string{"<none>:<none>"}, Size: 512},
+	}
+	containers := []dockerapi.Container{
+		// Image names a tag that no longer points here; only ImageID is authoritative.
+		{ID: "c1", ImageID: "sha256:used", Image: "nginx:latest"},
+		{ID: "c2", ImageID: "sha256:used", Image: "nginx:latest"},
+	}
+	byLabel := map[string]*Status{}
+	for _, node := range imageNodes(images, containers) {
+		byLabel[node.Label] = node.Status
+	}
+
+	if byLabel["nginx:1.25"].Tone != "ok" {
+		t.Fatalf("an in-use image should read as in use: %+v", byLabel["nginx:1.25"])
+	}
+	if !strings.Contains(byLabel["nginx:1.25"].Tooltip, "2 containers") {
+		t.Fatalf("tooltip = %q", byLabel["nginx:1.25"].Tooltip)
+	}
+	// Unused is neutral, not amber: it is a choice, not a problem, and amber on every cached image
+	// would make the colour mean nothing.
+	if byLabel["redis:7"].Tone != "neutral" {
+		t.Fatalf("an unused image should be neutral: %+v", byLabel["redis:7"])
+	}
+	dangling := byLabel["<untagged> sha256:dangl"]
+	if dangling == nil {
+		for label, st := range byLabel {
+			if strings.HasPrefix(label, "<untagged>") {
+				dangling = st
+			}
+		}
+	}
+	if dangling == nil || dangling.Tone != "warn" {
+		t.Fatalf("a dangling image is the one worth pointing at: %+v", dangling)
 	}
 }

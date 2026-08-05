@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,17 @@ type NodeDetails struct {
 // its properties are facts about a remote object rather than preferences anybody owns.
 func (s *Service) DescribeNode(ctx context.Context, sessionID, nodeID string) (NodeDetails, error) {
 	conn := s.connection(sessionID)
+
+	// The host asks about whatever is selected, and that is routinely a group or the Docker node
+	// itself. Answering those with "unknown node" put an error toast in front of a user who had done
+	// nothing wrong — a group has details, they are simply not editable.
+	switch domain.ClassOf(nodeID) {
+	case domain.ClassConnectionRoot, domain.ClassDockerRoot, domain.ClassGroup:
+		return s.groupDetails(ctx, conn, nodeID)
+	case domain.ClassUnknown:
+		return NodeDetails{}, domain.ErrInvalidNodeID
+	}
+
 	kind, dockerID, err := conn.Resolve(nodeID)
 	if err != nil {
 		return NodeDetails{}, err
@@ -60,6 +72,73 @@ func (s *Service) DescribeNode(ctx context.Context, sessionID, nodeID string) (N
 	}, nil
 }
 
+// groupDetails describes a group: what it holds and where it came from.
+//
+// Read-only, because nothing here is a preference — it is a count of what the daemon reports. The
+// panel exists so selecting a group answers something instead of failing.
+func (s *Service) groupDetails(ctx context.Context, conn *Connection, nodeID string) (NodeDetails, error) {
+	label := domain.GroupLabel(nodeID)
+	if label == "" {
+		label = "Docker"
+	}
+	summary := label
+	if client, err := conn.Control(ctx); err == nil {
+		switch nodeID {
+		case domain.NodeContainers:
+			if list, err := client.ListContainers(ctx); err == nil {
+				running := 0
+				for _, c := range list {
+					if strings.EqualFold(c.State, "running") {
+						running++
+					}
+				}
+				summary = fmt.Sprintf("%d containers, %d running", len(list), running)
+			}
+		case domain.NodeImages:
+			if list, err := client.ListImages(ctx); err == nil {
+				var bytes int64
+				for _, image := range list {
+					bytes += image.Size
+				}
+				summary = fmt.Sprintf("%d images, %s on disk", len(list), humanBytes(bytes))
+			}
+		case domain.NodeVolumes:
+			if list, err := client.ListVolumes(ctx); err == nil {
+				summary = fmt.Sprintf("%d volumes", len(list))
+			}
+		case domain.NodeNetworks:
+			if list, err := client.ListNetworks(ctx); err == nil {
+				summary = fmt.Sprintf("%d networks", len(list))
+			}
+		default:
+			if version, err := client.Negotiate(ctx); err == nil {
+				summary = "Docker " + version
+			}
+		}
+	}
+	return NodeDetails{
+		Editable: false,
+		Values:   map[string]string{"summary": summary},
+		Sections: []section{{ID: "summary", Label: label, Fields: []field{
+			{ID: "summary", Label: "", Type: "code"},
+		}}},
+	}, nil
+}
+
+// humanBytes renders a size the way a person reads one.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for size := n / unit; size >= unit && exp < 3; size /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+}
+
 // readOnlyDetails renders an image, volume or network's inspect as a panel nobody can edit.
 func (s *Service) readOnlyDetails(ctx context.Context, conn *Connection, kind, dockerID string) (NodeDetails, error) {
 	client, err := conn.Control(ctx)
@@ -88,6 +167,11 @@ func (s *Service) readOnlyDetails(ctx context.Context, conn *Connection, kind, d
 // is recreated are settings nobody will set twice.
 func (s *Service) ApplyDetails(ctx context.Context, sessionID, nodeID string, values map[string]string) error {
 	conn := s.connection(sessionID)
+	if domain.ClassOf(nodeID) != domain.ClassInstance {
+		// A group's panel is read-only; the host should not have sent a save, and answering with an
+		// error would put a toast in front of a user who cannot have caused it.
+		return nil
+	}
 	kind, dockerID, err := conn.Resolve(nodeID)
 	if err != nil {
 		return err

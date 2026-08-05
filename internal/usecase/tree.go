@@ -132,18 +132,67 @@ func formatPorts(ports []dockerapi.Port) string {
 	return strings.Join(parts, ", ")
 }
 
-func imageNodes(images []dockerapi.Image) []Node {
+// imageNodes turns the image list into rows, marking which ones something is actually using.
+//
+// Usage is what a person opens this list to decide: an image nothing references is a candidate for
+// removal, and one a container depends on is not. The daemon does not report it, so it is derived
+// here by matching every container's ImageID — and a container's `Image` field is whatever it was
+// started with (a tag, which may since have moved), so the id is what must be compared.
+func imageNodes(images []dockerapi.Image, containers []dockerapi.Container) []Node {
+	usedBy := make(map[string]int, len(images))
+	for _, container := range containers {
+		if container.ImageID != "" {
+			usedBy[container.ImageID]++
+		}
+	}
+
 	nodes := make([]Node, 0, len(images))
 	for _, image := range images {
 		nodes = append(nodes, Node{
 			ID:      domain.InstanceID(domain.KindImage, image.ID),
 			Kind:    "instance",
 			Label:   imageLabel(image),
+			Status:  imageStatus(image, usedBy[image.ID]),
 			Actions: imageActions(),
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Label < nodes[j].Label })
 	return nodes
+}
+
+// imageStatus marks an image by what depends on it.
+//
+// In use is `ok`; unused is `neutral`, not `warn` — an unused image is not a problem, it is a
+// choice, and painting every one of them amber would make the colour meaningless on a host that
+// keeps a build cache. Dangling (untagged AND unused) is the one worth pointing at, because it is
+// the case with no way back: nothing references it and no name can reach it.
+func imageStatus(image dockerapi.Image, users int) *Status {
+	size := humanBytes(image.Size)
+	switch {
+	case users > 0:
+		containers := "container"
+		if users > 1 {
+			containers = "containers"
+		}
+		return &Status{Tone: string(domain.ToneOK),
+			Tooltip: fmt.Sprintf("Used by %d %s\n%s", users, containers, size)}
+	case isDangling(image):
+		return &Status{Tone: string(domain.ToneWarn),
+			Tooltip: "Dangling: untagged and unused\n" + size}
+	default:
+		return &Status{Tone: string(domain.ToneNeutral),
+			Tooltip: "Not used by any container\n" + size}
+	}
+}
+
+// isDangling reports an image no tag can reach.
+func isDangling(image dockerapi.Image) bool {
+	for _, tag := range image.RepoTags {
+		if tag != "" && tag != "<none>:<none>" {
+			return false
+		}
+	}
+	return true
 }
 
 // imageLabel prefers a tag: an id is what the daemon calls it, a tag is what the user does.

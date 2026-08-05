@@ -133,3 +133,53 @@ func TestTooltipDropsEmptyParts(t *testing.T) {
 		t.Fatalf("tooltip has blank lines: %q", got.Tooltip)
 	}
 }
+
+// Docker mints image ids as "sha256:<hex>". The first version of this pattern was written from what
+// a container id looks like and silently refused every image, which reached a user as "Inspect does
+// nothing".
+func TestImageIDsAreAcceptedWholeSHA(t *testing.T) {
+	id := "sha256:802c91d5298192c0f3a08101aeb5f9ade2992e22c9e27fa8b88eab82602550d0"
+	node := InstanceID(KindImage, id)
+	kind, dockerID, err := ParseInstanceID(node)
+	if err != nil {
+		t.Fatalf("ParseInstanceID(%q): %v", node, err)
+	}
+	if kind != KindImage || dockerID != id {
+		t.Fatalf("kind=%q id=%q", kind, dockerID)
+	}
+}
+
+// Widening the charset must not widen what can reach a path. These stay refused.
+func TestWiderCharsetStillRefusesPathTricks(t *testing.T) {
+	for _, id := range []string{
+		"docker/image/../../etc/passwd",
+		"docker/image/sha256:abc/../..",
+		"docker/image/:leading-colon",
+		"docker/image/sha256:abc?force=1",
+	} {
+		if _, _, err := ParseInstanceID(id); err == nil {
+			t.Fatalf("%q was accepted", id)
+		}
+	}
+}
+
+// Selecting a group asks the host for its details. Classifying one as unknown produced an error
+// toast for a user who had done nothing wrong.
+func TestClassOfDistinguishesGroupsFromInstances(t *testing.T) {
+	cases := map[string]NodeClass{
+		"":                    ClassConnectionRoot,
+		NodeRoot:              ClassDockerRoot,
+		NodeContainers:        ClassGroup,
+		NodeImages:            ClassGroup,
+		NodeVolumes:           ClassGroup,
+		NodeNetworks:          ClassGroup,
+		"docker/image/abc123": ClassInstance,
+		"docker/nonsense":     ClassUnknown,
+		"something-else":      ClassUnknown,
+	}
+	for id, want := range cases {
+		if got := ClassOf(id); got != want {
+			t.Fatalf("ClassOf(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

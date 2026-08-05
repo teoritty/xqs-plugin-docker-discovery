@@ -7,6 +7,16 @@ import (
 	"strconv"
 )
 
+// pathSegment escapes an id for use as one segment of an Engine API path.
+//
+// Every id here came from the daemon and was pattern-checked on the way back in, and it is escaped
+// anyway. The two checks answer different questions: the pattern rejects what is not an id, and
+// this makes any id — including ones a future Docker mints in a shape nobody predicted — unable to
+// end a segment early, start a query, or climb a directory. Safety that rests on a charset is
+// safety that breaks the next time the charset is widened, which is exactly what happened when
+// image ids turned out to contain a colon.
+func pathSegment(id string) string { return url.PathEscape(id) }
+
 // errorsAs is a tiny indirection so client.go can avoid importing errors twice over.
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
 
@@ -15,13 +25,16 @@ func errorsAs(err error, target any) bool { return errors.As(err, target) }
 // A projection rather than the whole payload: everything here appears on screen or decides a
 // status tone, and a field nobody reads is a field that silently rots.
 type Container struct {
-	ID     string   `json:"Id"`
-	Names  []string `json:"Names"`
-	Image  string   `json:"Image"`
-	State  string   `json:"State"`
-	Status string   `json:"Status"`
-	Ports  []Port   `json:"Ports"`
-	Labels map[string]string
+	ID    string   `json:"Id"`
+	Names []string `json:"Names"`
+	// Image is what the container was started with — usually a tag, which may since have moved.
+	Image string `json:"Image"`
+	// ImageID is the immutable id behind it, and the only thing an image row can be matched on.
+	ImageID string `json:"ImageID"`
+	State   string `json:"State"`
+	Status  string `json:"Status"`
+	Ports   []Port `json:"Ports"`
+	Labels  map[string]string
 }
 
 // Port is one published port mapping.
@@ -123,7 +136,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 // InspectContainer returns the detail behind a container's status dot.
 func (c *Client) InspectContainer(ctx context.Context, id string) (ContainerDetail, error) {
 	var detail ContainerDetail
-	if err := c.GetJSON(ctx, "/containers/"+id+"/json", nil, &detail); err != nil {
+	if err := c.GetJSON(ctx, "/containers/"+pathSegment(id)+"/json", nil, &detail); err != nil {
 		return ContainerDetail{}, err
 	}
 	return detail, nil
@@ -133,13 +146,13 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (ContainerDeta
 func (c *Client) InspectRaw(ctx context.Context, kind, id string) ([]byte, error) {
 	switch kind {
 	case "container":
-		return c.GetRaw(ctx, "/containers/"+id+"/json", nil)
+		return c.GetRaw(ctx, "/containers/"+pathSegment(id)+"/json", nil)
 	case "image":
-		return c.GetRaw(ctx, "/images/"+id+"/json", nil)
+		return c.GetRaw(ctx, "/images/"+pathSegment(id)+"/json", nil)
 	case "volume":
-		return c.GetRaw(ctx, "/volumes/"+id, nil)
+		return c.GetRaw(ctx, "/volumes/"+pathSegment(id), nil)
 	case "network":
-		return c.GetRaw(ctx, "/networks/"+id, nil)
+		return c.GetRaw(ctx, "/networks/"+pathSegment(id), nil)
 	default:
 		return nil, errors.New("dockerapi: unknown object kind")
 	}
@@ -178,32 +191,32 @@ func (c *Client) ListNetworks(ctx context.Context) ([]Network, error) {
 
 // StartContainer starts a stopped container.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/start", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/start", nil, nil, nil)
 }
 
 // StopContainer stops a running container, giving it the daemon's default grace period.
 func (c *Client) StopContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/stop", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/stop", nil, nil, nil)
 }
 
 // RestartContainer stops and starts a container.
 func (c *Client) RestartContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/restart", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/restart", nil, nil, nil)
 }
 
 // KillContainer sends SIGKILL.
 func (c *Client) KillContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/kill", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/kill", nil, nil, nil)
 }
 
 // PauseContainer freezes a container's processes.
 func (c *Client) PauseContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/pause", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/pause", nil, nil, nil)
 }
 
 // UnpauseContainer resumes a paused container.
 func (c *Client) UnpauseContainer(ctx context.Context, id string) error {
-	return c.PostJSON(ctx, "/containers/"+id+"/unpause", nil, nil, nil)
+	return c.PostJSON(ctx, "/containers/"+pathSegment(id)+"/unpause", nil, nil, nil)
 }
 
 // RemoveContainer deletes a container, optionally forcing it and taking its anonymous volumes.
@@ -215,7 +228,7 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force, removeVo
 	if removeVolumes {
 		query.Set("v", "1")
 	}
-	return c.Delete(ctx, "/containers/"+id, query)
+	return c.Delete(ctx, "/containers/"+pathSegment(id), query)
 }
 
 // RemoveImage deletes an image.
@@ -227,7 +240,7 @@ func (c *Client) RemoveImage(ctx context.Context, id string, force, noPrune bool
 	if noPrune {
 		query.Set("noprune", "1")
 	}
-	return c.Delete(ctx, "/images/"+id, query)
+	return c.Delete(ctx, "/images/"+pathSegment(id), query)
 }
 
 // RemoveVolume deletes a volume.
@@ -236,12 +249,12 @@ func (c *Client) RemoveVolume(ctx context.Context, name string, force bool) erro
 	if force {
 		query.Set("force", "1")
 	}
-	return c.Delete(ctx, "/volumes/"+name, query)
+	return c.Delete(ctx, "/volumes/"+pathSegment(name), query)
 }
 
 // RemoveNetwork deletes a network.
 func (c *Client) RemoveNetwork(ctx context.Context, id string) error {
-	return c.Delete(ctx, "/networks/"+id, nil)
+	return c.Delete(ctx, "/networks/"+pathSegment(id), nil)
 }
 
 // CreateVolumeRequest is the body of a volume create.
@@ -311,7 +324,7 @@ func (c *Client) ContainerLogs(ctx context.Context, id string, opts LogOptions) 
 	} else {
 		query.Set("tail", "all")
 	}
-	return c.Stream(ctx, "GET", "/containers/"+id+"/logs", query)
+	return c.Stream(ctx, "GET", "/containers/"+pathSegment(id)+"/logs", query)
 }
 
 // Events opens the daemon's event stream.

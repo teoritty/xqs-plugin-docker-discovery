@@ -26,6 +26,10 @@ func (s *Service) openLogSurface(ctx context.Context, conn *Connection, containe
 	surfaceID, err := s.openSurface(ctx, conn, "log", "Logs · "+name)
 	if err != nil {
 		_ = client.Close()
+		// Reported, not swallowed. A failure here has no other symptom at all — the user clicks
+		// Logs and nothing whatsoever happens, with nothing in any log saying why.
+		slog.Warn("could not open a log tab", "component", "docker", "err", err)
+		s.openMessageDialog(ctx, conn, "Logs unavailable", surfaceFailure(err))
 		return
 	}
 
@@ -43,6 +47,7 @@ func (s *Service) openLogSurface(ctx context.Context, conn *Connection, containe
 		cancel: cancel,
 		closer: func() { _ = stream.Close() },
 		client: client,
+		conn:   conn,
 	})
 	s.setSurfaceReady(surfaceID)
 	go s.pumpLogs(pumpCtx, surfaceID, stream)
@@ -125,6 +130,8 @@ func (s *Service) openConsoleSurface(ctx context.Context, conn *Connection, cont
 	if err != nil {
 		_ = stream.Close()
 		_ = client.Close()
+		slog.Warn("could not open a console tab", "component", "docker", "err", err)
+		s.openMessageDialog(ctx, conn, "Console unavailable", surfaceFailure(err))
 		return
 	}
 
@@ -134,6 +141,7 @@ func (s *Service) openConsoleSurface(ctx context.Context, conn *Connection, cont
 		closer: func() { _ = stream.Close() },
 		execID: execID,
 		client: client,
+		conn:   conn,
 	})
 	s.setSurfaceReady(surfaceID)
 	go s.pumpConsole(pumpCtx, surfaceID, stream)
@@ -233,12 +241,21 @@ func (s *Service) SurfaceResize(surfaceID string, cols, rows int) {
 	s.mu.Lock()
 	sur := s.surfaces[surfaceID]
 	s.mu.Unlock()
-	if sur == nil || sur.execID == "" || sur.client == nil {
+	if sur == nil || sur.execID == "" || sur.conn == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), surfaceWriteTimeout)
 	defer cancel()
-	_ = sur.client.ResizeExec(ctx, sur.execID, cols, rows)
+	// Deliberately NOT sur.client. That connection was hijacked when the exec attached: it is the
+	// shell's stdio now, and an HTTP request written to it would be typed into the user's terminal.
+	// The resize is an ordinary API call and rides the ordinary request client.
+	client, err := sur.conn.Control(ctx)
+	if err != nil {
+		return
+	}
+	if err := client.ResizeExec(ctx, sur.execID, cols, rows); err != nil {
+		slog.Debug("exec resize refused", "err", err)
+	}
 }
 
 // SurfaceClosed stops the work behind a tab the user closed.
@@ -263,6 +280,21 @@ func (s *Service) registerConsoleInput(surfaceID string, w io.Writer) {
 	s.mu.Lock()
 	s.consoleInput[surfaceID] = w
 	s.mu.Unlock()
+}
+
+// surfaceFailure explains why a tab could not open.
+//
+// The host refuses surface.open when the plugin was installed without the ui capability, which is
+// the likeliest cause by far and the one a user can act on: it means the installed host predates
+// ADR-015, or the plugin bundle is older than the manifest the host negotiated against.
+func surfaceFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	if ipcIsDenied(err) {
+		return "This xQuakShell build does not offer plugin tabs (the ui capability). The plugin needs a host with ADR-015 support."
+	}
+	return "The tab could not be opened: " + err.Error()
 }
 
 // containerName resolves a container's display name, falling back to its short id.

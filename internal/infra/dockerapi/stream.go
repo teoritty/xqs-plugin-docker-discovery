@@ -81,7 +81,7 @@ func (c *Client) CreateExec(ctx context.Context, containerID string, cfg ExecCon
 	var out struct {
 		ID string `json:"Id"`
 	}
-	if err := c.PostJSON(ctx, "/containers/"+containerID+"/exec", nil, cfg, &out); err != nil {
+	if err := c.PostJSON(ctx, "/containers/"+pathSegment(containerID)+"/exec", nil, cfg, &out); err != nil {
 		return "", err
 	}
 	if out.ID == "" {
@@ -101,7 +101,7 @@ func (c *Client) StartExec(ctx context.Context, execID string, tty bool) (io.Rea
 	if err != nil {
 		return nil, err
 	}
-	req, err := buildRequest(ctx, "POST", "/v"+c.Version()+"/exec/"+execID+"/start", nil, payload)
+	req, err := buildRequest(ctx, "POST", "/v"+c.Version()+"/exec/"+pathSegment(execID)+"/start", nil, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (c *Client) ResizeExec(ctx context.Context, execID string, cols, rows int) 
 		"w": []string{itoa(cols)},
 		"h": []string{itoa(rows)},
 	}
-	return c.PostJSON(ctx, "/exec/"+execID+"/resize", query, nil, nil)
+	return c.PostJSON(ctx, "/exec/"+pathSegment(execID)+"/resize", query, nil, nil)
 }
 
 func itoa(n int) string {
