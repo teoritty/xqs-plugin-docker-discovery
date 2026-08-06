@@ -35,9 +35,11 @@ func (s *Service) publish(ctx context.Context, conn *Connection, nodeID string, 
 		slog.Warn("branch failed", "component", "docker", "node", nodeID, "reason", errMessage)
 	}
 	if _, err := s.host.Call(ctx, "discovery.publish", payload); err != nil {
-		// A publish for a branch the user collapsed, or a session that stopped leading, is accepted
-		// and dropped by the host — an ordinary race, not something to retry or report.
-		slog.Debug("publish refused", "node", nodeID, "err", err)
+		// Warn, not debug. The ordinary races — a branch the user collapsed, a session that stopped
+		// leading — are accepted and dropped by the host with no error at all. An error means the
+		// host judged the snapshot malformed and published nothing, which is a defect in this plugin
+		// and shows up to the user only as a branch that never fills in.
+		slog.Warn("publish refused", "component", "docker", "node", nodeID, "err", err)
 	}
 }
 

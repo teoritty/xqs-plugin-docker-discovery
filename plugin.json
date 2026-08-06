@@ -1,7 +1,7 @@
 {
   "id": "io.xquakshell.plugin.docker",
   "name": "Docker",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Browse and manage Docker containers, images, volumes and networks under your SSH connections.",
   "requires": {
     "pluginApi": "1.0.0",

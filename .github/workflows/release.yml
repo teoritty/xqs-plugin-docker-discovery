@@ -92,9 +92,10 @@ jobs:
             capability negotiation at load with `-32009`, which is the host correctly refusing a
             plugin it cannot serve.
 
-            The Delete key over a selection needs a host that understands an action's `delete` flag.
-            On an older one the flag is ignored and the key does nothing; the Remove… menu entry
-            works either way.
+            The Delete key over a selection needs a host that understands an action's `role`
+            (ADR-014). On an older one the field is dropped and the key does nothing; the Remove…
+            menu entry works either way. This replaces the `delete` flag that 1.0.4 sent — that
+            spelling exists on neither side now, so 1.0.4 is superseded rather than an alternative.
 
             ### What is covered by tests
             Frame codec, JSON-RPC client, channel flow control, the Engine API client and its stream

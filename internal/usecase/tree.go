@@ -35,10 +35,16 @@ type Action struct {
 	Danger  bool   `json:"danger,omitempty"`
 	Confirm string `json:"confirm,omitempty"`
 	Multi   bool   `json:"multi,omitempty"`
-	// Delete tells the host which action its Delete key means. The host still knows nothing about
-	// what the action does — it relays the same id the menu would have (ADR-014 "Actions").
-	Delete bool `json:"delete,omitempty"`
+	// Role tells the host which keyboard shortcut this action answers, from the host's own closed
+	// vocabulary. The host still knows nothing about what the action does — it relays the same id
+	// the menu would have (ADR-014 "Actions"). An unknown role makes the host refuse the whole
+	// snapshot, so this must only ever carry a value the negotiated host understands.
+	Role string `json:"role,omitempty"`
 }
+
+// RoleDelete is the host's role for "what the Delete key runs". A literal rather than an import:
+// the plugin shares no code with the host, only the wire contract.
+const RoleDelete = "delete"
 
 // buildRoot returns the four groups under the Docker node.
 //

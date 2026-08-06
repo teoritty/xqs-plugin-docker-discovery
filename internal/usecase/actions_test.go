@@ -175,14 +175,17 @@ func TestBatchWithNoFailuresIsSilent(t *testing.T) {
 	}
 }
 
-// Every remove action names itself as what the Delete key runs; nothing else does. The host binds
-// the key by this flag alone (ADR-014 "Actions"), so a missing one is a shortcut that does nothing
-// and a stray one is a shortcut that does the wrong thing.
-func TestOnlyRemovesAreMarkedForTheDeleteKey(t *testing.T) {
+// Every remove action carries the delete role; nothing else does. The host binds the key by this
+// value alone (ADR-014 "Actions"), so a missing one is a shortcut that does nothing and a stray one
+// is a shortcut that does the wrong thing.
+//
+// Exactly one per node is also the host's rule, not a preference: it refuses a node carrying two
+// actions of one role, which would take the whole branch down with it.
+func TestOnlyRemovesCarryTheDeleteRole(t *testing.T) {
 	marked := func(actions []Action) []string {
 		var out []string
 		for _, a := range actions {
-			if a.Delete {
+			if a.Role == RoleDelete {
 				out = append(out, a.ID)
 			}
 		}
@@ -211,6 +214,19 @@ func TestOnlyRemovesAreMarkedForTheDeleteKey(t *testing.T) {
 	for _, builtin := range []string{"bridge", "host", "none"} {
 		if got := marked(networkActions(builtin)); len(got) != 0 {
 			t.Fatalf("%s network must not answer the Delete key, got %v", builtin, got)
+		}
+	}
+	// Nothing carries a role the host has never heard of. An unknown one is not ignored — it makes
+	// the host refuse the entire snapshot, so the whole tree would go with it.
+	every := [][]Action{
+		containerActions("running"), containerActions("exited"), containerActions("paused"),
+		imageActions(), volumeActions(), networkActions("my-net"), networkActions("bridge"),
+	}
+	for _, actions := range every {
+		for _, a := range actions {
+			if a.Role != "" && a.Role != RoleDelete {
+				t.Fatalf("action %q carries role %q, which this host contract does not define", a.ID, a.Role)
+			}
 		}
 	}
 }
