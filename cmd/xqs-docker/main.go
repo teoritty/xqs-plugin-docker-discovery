@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -122,6 +123,22 @@ func (h hostAdapter) Notify(method string, params any) error {
 // streamAdapter opens a Docker stream over a new exec channel.
 type streamAdapter struct{ channels *chanbus.Manager }
 
+// OpenExec translates the host's refusal into the port's own vocabulary, which is the whole reason
+// this adapter exists rather than the use case holding a *chanbus.Manager.
+//
+// The wire says -32001 and nothing more; only this side of the boundary knows that the code means
+// "and it will say so again". Deciding that in the use case would put a JSON-RPC number in a layer
+// that must not know there is JSON-RPC, and deciding it in chanbus would point infrastructure at
+// the use case's sentinel. So it is decided here, in the one place allowed to see both.
 func (s streamAdapter) OpenExec(ctx context.Context, parentSessionID string) (io.ReadWriteCloser, error) {
-	return s.channels.OpenExec(ctx, parentSessionID)
+	stream, err := s.channels.OpenExec(ctx, parentSessionID)
+	if err != nil {
+		if ipc.IsCapabilityDenied(err) {
+			// Both wrapped: the sentinel is what the use case branches on, and the original still
+			// carries the host's wording for the log and the message the user is shown.
+			return nil, fmt.Errorf("%w: %w", usecase.ErrHostDenied, err)
+		}
+		return nil, err
+	}
+	return stream, nil
 }
