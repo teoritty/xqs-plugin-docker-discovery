@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -60,15 +61,24 @@ const (
 
 // IsCapabilityDenied reports whether err is the host refusing on capability grounds. Callers use it
 // to stop rather than retry: a denial is a statement about the manifest, not about the moment.
+//
+// errors.As rather than a type assertion, and the difference is not academic. Every caller reaches
+// this through at least one fmt.Errorf("...: %w") — chanbus wraps the host's answer before anyone
+// else sees it — so the assertion these two used to make never matched once. The helpers read as
+// correct, answered false for every denial there has ever been, and the one place that needed the
+// answer went looking for it in the error text instead.
 func IsCapabilityDenied(err error) bool {
-	rpcErr, ok := err.(*RPCError)
-	return ok && rpcErr.Code == CodeCapabilityDenied
+	return hasCode(err, CodeCapabilityDenied)
 }
 
 // IsRateLimited reports whether err is the host asking us to slow down.
 func IsRateLimited(err error) bool {
-	rpcErr, ok := err.(*RPCError)
-	return ok && rpcErr.Code == CodeRateLimited
+	return hasCode(err, CodeRateLimited)
+}
+
+func hasCode(err error, code int) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == code
 }
 
 // EncodeMessage marshals a message into a JSON-RPC frame payload, refusing one too large for the

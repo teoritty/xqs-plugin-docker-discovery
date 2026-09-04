@@ -54,10 +54,11 @@ func (s *Service) watchEvents(ctx context.Context, conn *Connection) {
 	for ctx.Err() == nil {
 		err := s.followEvents(ctx, conn)
 		if errors.Is(err, ErrSessionGone) || conn.Gone() {
-			// Terminal. The tab this subtree rode has closed, and every further attempt would be
-			// refused by the host for a session it has forgotten — which is what turned a closed
-			// tab into an endless stream of denied channel.open in the host's log.
-			slog.Info("session closed, dropping its docker state", "component", "docker")
+			// Terminal. The host has refused, and it refuses the same call every time: the tab this
+			// subtree rode has closed, or the grant the exec channel needs was never given. Either
+			// way, retrying is what turned a closed tab into an endless stream of denied
+			// channel.open in the host's log.
+			slog.Info("host refused this connection, dropping its docker state", "component", "docker")
 			s.forget(conn.SessionID())
 			return
 		}

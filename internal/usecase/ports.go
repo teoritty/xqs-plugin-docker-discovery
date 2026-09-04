@@ -6,6 +6,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 
 	"github.com/teoritty/xqs-plugin-docker-discovery/internal/infra/dockerapi"
@@ -22,9 +23,21 @@ type Host interface {
 // Every long-lived operation takes one of its own: an HTTP connection carrying a followed log or a
 // hijacked exec cannot also serve requests, and the plugin declares a channel budget that assumes
 // exactly this (channel.maxConcurrent: 8).
+// An implementation MUST report a host refusal as an error wrapping ErrHostDenied. That is the one
+// thing this package cannot work out for itself: the host's reason travels in its audit log, and
+// what crosses the wire is a bare error code whose meaning belongs to the transport.
 type Streams interface {
 	OpenExec(ctx context.Context, parentSessionID string) (io.ReadWriteCloser, error)
 }
+
+// ErrHostDenied reports that the host refused, and would refuse the same call again.
+//
+// It covers all three things the host answers -32001 for: the manifest never granted the
+// capability, the named session belongs to somebody else, and the named session has closed. The
+// host collapses them into one answer on purpose - telling them apart would let a plugin probe
+// session ids - and for this plugin they call for the same thing anyway. None of the three changes
+// on a retry, so all three end the connection rather than pausing it.
+var ErrHostDenied = errors.New("the host refused this connection")
 
 // SettingsStore persists per-resource settings the user edits in the node panel.
 //
