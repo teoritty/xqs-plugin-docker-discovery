@@ -1,7 +1,7 @@
 {
   "id": "io.xquakshell.plugin.docker",
   "name": "Docker",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Browse and manage Docker containers, images, volumes and networks under your SSH connections.",
   "requires": {
     "pluginApi": "1.0.0",
@@ -23,6 +23,9 @@
   "capabilities": {
     "discovery": {
       "parentProtocols": ["ssh"]
+    },
+    "session": {
+      "allowMultiSession": true
     },
     "channel": {
       "purposes": ["exec"],
