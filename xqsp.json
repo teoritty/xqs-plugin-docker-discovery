@@ -5,7 +5,7 @@
   "description": "Browse and manage Docker containers, images, volumes and networks under your SSH connections.",
   "author": "teoritty",
   "license": "GPL-3.0",
-  "homepage": "https://gitlab.com/teoritty/xqs-plugin-docker-discovery",
+  "homepage": "https://github.com/teoritty/xqs-plugin-docker-discovery",
   "tags": [
     "docker",
     "containers",
